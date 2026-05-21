@@ -1,17 +1,18 @@
 import os
 import json
 import streamlit as st
-from PIL import Image, ImageDraw
-from streamlit_image_coordinates import streamlit_image_coordinates
 import pandas as pd
+import geopandas as gpd
+import folium
+from streamlit_folium import st_folium
 
 # ─────────────────────────────────────────────
-# 1. 경로 및 페이지 설정 (배포 최적화)
+# 1. 경로 및 페이지 설정
 # ─────────────────────────────────────────────
-IMG_PATH  = "FullSizeRender.jpeg"
+SHP_PATH  = "N3A_G0100000.shp"  # 업로드하신 SHP 파일 경로 (세트 파일들이 같은 폴더에 있어야 함)
 DATA_FILE = "companies.json"
 
-st.set_page_config(page_title="대한민국 행정구역 업체관리", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="대한민국 행정구역 업체관리 (GIS)", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
@@ -21,7 +22,7 @@ st.markdown("""
     .block-container { padding-top: 1.5rem; }
     h1 { font-size: 1.6rem !important; font-weight: 700; color: #1a1a2e; }
     .region-badge {
-        display: inline-block; background: #1a1a2e; color: #fff;
+        display: inline-block; background: #4361ee; color: #fff;
         border-radius: 6px; padding: 4px 14px; font-size: 1rem; font-weight: 700; margin-bottom: 12px;
     }
     .stButton > button { border-radius: 8px; font-family: 'Noto Sans KR', sans-serif; font-weight: 500; }
@@ -32,113 +33,37 @@ st.markdown("""
     }
     .stat-num { font-size: 1.4rem; font-weight: 700; color: #4361ee; }
     .stat-label { font-size: 0.75rem; color: #888; }
-    .debug-box {
-        background: #fff3cd; border: 1px solid #ffc107;
-        border-radius: 6px; padding: 8px 12px; font-size: 0.82rem; margin-top: 8px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# 2. 행정구역 좌표 데이터 (안전한 줄바꿈 분할)
+# 2. GIS 데이터 로드 및 좌표계 변환 (WGS84)
 # ─────────────────────────────────────────────
-REGIONS = {
-    # 특별시·광역시·특별자치시
-    "서울": (210, 190, 80, 60), "인천": (150, 200, 65, 65), "대전": (420, 530, 80, 65),
-    "세종": (405, 490, 58, 45), "대구": (615, 648, 82, 65), "광주": (272, 725, 75, 62),
-    "울산": (768, 685, 75, 62), "부산": (722, 758, 90, 70),
+@st.cache_data
+def load_shp_data():
+    if not os.path.exists(SHP_PATH):
+        st.error(f"SHP 파일을 찾을 수 없습니다. 경로를 확인해주세요: {SHP_PATH}\n(.dbf, .shx, .prj 파일도 같은 폴더에 있어야 합니다.)")
+        st.stop()
     
-    # 경기도 1
-    "수원": (208, 288, 52, 40), "성남": (238, 258, 50, 38), "안양": (202, 260, 42, 35),
-    "부천": (168, 225, 48, 38), "광명": (183, 248, 40, 32), "평택": (202, 332, 62, 48),
-    "안성": (262, 338, 55, 45), "화성": (168, 298, 58, 52), "용인": (248, 282, 58, 48),
+    # SHP 읽기
+    gdf = gpd.read_file(SHP_PATH, encoding="euc-kr") # 또는 cp949
     
-    # 경기도 2
-    "이천": (292, 278, 55, 45), "여주": (332, 260, 55, 45), "광주(경기)": (262, 240, 50, 40),
-    "하남": (248, 228, 42, 30), "구리": (240, 210, 38, 28), "남양주": (270, 202, 62, 40),
-    "의정부": (232, 182, 45, 32), "양주": (230, 162, 50, 38), "동두천": (220, 144, 45, 32),
+    # 지도(Folium)에 띄우기 위해 표준 위경도 좌표계(EPSG:4326)로 변환
+    if gdf.crs is None:
+        # 업로드한 prj 파일 기반으로 설정하되, 없을 경우 한국 표준 통합좌표계 설정
+        gdf.crs = "EPSG:5179"
+    gdf = gdf.to_crs(epsg=4326)
     
-    # 경기도 3
-    "포천": (264, 147, 62, 52), "가평": (322, 168, 62, 52), "양평": (300, 240, 52, 42),
-    "고양": (188, 182, 55, 38), "파주": (154, 160, 58, 50), "김포": (142, 197, 48, 40),
-    "연천": (202, 127, 55, 45), "안산": (157, 262, 48, 42), "시흥": (162, 240, 40, 35),
-    "의왕": (202, 270, 38, 30), "군포": (197, 278, 38, 30), "과천": (218, 262, 35, 28),
-    "오산": (204, 310, 42, 35),
-    
-    # 강원도 1
-    "춘천": (380, 157, 75, 65), "홍천": (440, 184, 85, 70), "원주": (370, 247, 65, 55),
-    "횡성": (422, 234, 58, 48), "평창": (472, 220, 72, 58), "강릉": (552, 187, 65, 52),
-    "동해": (572, 234, 52, 45), "삼척": (580, 263, 58, 52), "태백": (540, 250, 48, 45),
-    
-    # 강원도 2
-    "정선": (502, 237, 55, 50), "영월": (460, 260, 55, 50), "제천": (424, 287, 58, 50),
-    "충주": (382, 287, 62, 50), "단양": (447, 270, 50, 40), "화천": (410, 130, 63, 48),
-    "양구": (450, 127, 55, 45), "인제": (482, 140, 68, 62), "고성(강원)": (502, 112, 55, 45),
-    "속초": (527, 140, 45, 38), "양양": (540, 167, 48, 40), "철원": (347, 120, 68, 45),
-    
-    # 충청북도
-    "청주": (408, 428, 76, 64), "보은": (440, 487, 62, 50), "옥천": (422, 530, 55, 45),
-    "영동": (440, 560, 58, 48), "진천": (376, 398, 55, 45), "음성": (346, 368, 58, 48),
-    "증평": (378, 378, 42, 35), "괴산": (408, 378, 58, 45),
-    
-    # 충청남도 1
-    "천안": (308, 358, 72, 58), "아산": (275, 338, 62, 50), "당진": (212, 338, 62, 50),
-    "서산": (165, 348, 62, 50), "태안": (135, 345, 48, 58), "홍성": (205, 395, 58, 48),
-    "예산": (245, 385, 55, 45), "공주": (300, 425, 65, 52), "보령": (178, 438, 62, 52),
-    
-    # 충청남도 2
-    "청양": (242, 428, 55, 45), "부여": (258, 465, 62, 50), "서천": (225, 495, 55, 48),
-    "논산": (288, 488, 62, 50), "금산": (358, 525, 55, 48), "계룡": (308, 502, 40, 32),
-    
-    # 전라북도 1
-    "전주": (305, 588, 72, 62), "익산": (268, 562, 62, 52), "군산": (228, 548, 58, 50),
-    "김제": (262, 605, 62, 52), "완주": (328, 572, 55, 48), "부안": (225, 628, 55, 52),
-    "정읍": (255, 648, 62, 52), "고창": (228, 688, 58, 52), "남원": (345, 638, 65, 58),
-    
-    # 전라북도 2
-    "순창": (308, 658, 55, 50), "임실": (320, 620, 52, 45), "진안": (358, 588, 55, 50),
-    "무주": (398, 548, 58, 50), "장수": (368, 628, 55, 50),
-    
-    # 전라남도 1
-    "목포": (195, 805, 50, 42), "여수": (378, 820, 62, 55), "순천": (348, 790, 64, 55),
-    "광양": (380, 788, 50, 45), "나주": (258, 768, 58, 50), "화순": (298, 768, 55, 48),
-    "담양": (295, 728, 52, 45), "곡성": (328, 748, 50, 45), "구례": (358, 758, 50, 45),
-    
-    # 전라남도 2
-    "장성": (260, 718, 52, 45), "영광": (218, 708, 55, 48), "함평": (235, 738, 50, 45),
-    "무안": (212, 768, 48, 40), "신안": (155, 780, 58, 62), "진도": (165, 838, 55, 50),
-    "해남": (230, 838, 68, 58), "강진": (270, 838, 55, 50), "장흥": (300, 828, 55, 50),
-    "보성": (328, 798, 55, 50), "고흥": (350, 830, 65, 58), "완도": (280, 872, 65, 55),
-    "영암": (238, 802, 52, 45),
-    
-    # 경상북도 1
-    "포항": (682, 488, 75, 65), "경주": (668, 552, 78, 68), "안동": (615, 425, 84, 72),
-    "구미": (565, 508, 72, 58), "영주": (568, 378, 64, 55), "영천": (645, 588, 65, 55),
-    "상주": (538, 468, 65, 55), "문경": (502, 418, 65, 55), "경산": (640, 635, 62, 50),
-    
-    # 경상북도 2
-    "군위": (605, 535, 58, 50), "의성": (588, 478, 62, 52), "청송": (638, 458, 58, 50),
-    "영양": (658, 418, 55, 48), "영덕": (682, 445, 52, 48), "청도": (638, 670, 58, 50),
-    "고령": (588, 670, 55, 50), "성주": (562, 588, 58, 50), "칠곡": (572, 612, 50, 42),
-    "예천": (538, 418, 55, 48), "봉화": (598, 378, 65, 50), "울진": (662, 378, 58, 55),
-    "김천": (528, 538, 62, 52),
-    
-    # 경상남도 1
-    "창원": (640, 750, 78, 65), "진주": (568, 768, 74, 63), "통영": (618, 818, 62, 55),
-    "사천": (558, 802, 58, 50), "김해": (685, 772, 64, 55), "밀양": (658, 708, 65, 55),
-    "거제": (685, 830, 68, 62), "양산": (715, 730, 58, 50), "의령": (605, 738, 55, 48),
-    
-    # 경상남도 2
-    "함안": (625, 765, 55, 48), "창녕": (618, 708, 55, 50), "고성(경남)": (590, 798, 55, 50),
-    "남해": (558, 838, 62, 55), "하동": (488, 788, 58, 50), "산청": (528, 748, 58, 50),
-    "함양": (495, 728, 55, 50), "거창": (518, 698, 58, 50), "합천": (558, 728, 62, 50),
-    
-    # 제주도
-    "제주": (330, 945, 88, 68), "서귀포": (330, 1000, 88, 58)
-}
+    # 공백 제거 및 이름 매핑 정제 (NAME 컬럼 활용)
+    if "NAME" in gdf.columns:
+        gdf["NAME"] = gdf["NAME"].str.strip()
+    return gdf
+
+gdf_regions = load_shp_data()
+all_region_names = sorted(gdf_regions["NAME"].dropna().unique().tolist())
 
 # ─────────────────────────────────────────────
-# 3. 데이터 입출력 함수 및 상태 초기화
+# 3. 데이터 입출력 및 상태 초기화
 # ─────────────────────────────────────────────
 def load_json_data():
     if os.path.exists(DATA_FILE):
@@ -152,39 +77,7 @@ def load_json_data():
 if "region_data" not in st.session_state:
     st.session_state.region_data = load_json_data()
 if "selected_region" not in st.session_state:
-    st.session_state.selected_region = "서울"
-if "last_click" not in st.session_state:
-    st.session_state.last_click = None
-if "last_raw_coords" not in st.session_state:
-    st.session_state.last_raw_coords = None
-
-# ─────────────────────────────────────────────
-# 4. 헬퍼 유틸리티 함수
-# ─────────────────────────────────────────────
-@st.cache_data
-def load_image():
-    if not os.path.exists(IMG_PATH):
-        st.error(f"이미지 파일을 찾을 수 없습니다. 파일명: {IMG_PATH}")
-        st.stop()
-    return Image.open(IMG_PATH).convert("RGB")
-
-def draw_overlay(img: Image.Image, selected: str) -> Image.Image:
-    overlay = img.copy().convert("RGBA")
-    draw = ImageDraw.Draw(overlay)
-    if selected in REGIONS:
-        x, y, w, h = REGIONS[selected]
-        draw.rectangle([x, y, x + w, y + h], fill=(255, 182, 193, 120), outline=(220, 50, 90, 230), width=3)
-    return overlay.convert("RGB")
-
-def detect_region(cx: int, cy: int) -> str | None:
-    matched = []
-    for region, (bx, by, bw, bh) in REGIONS.items():
-        if bx <= cx <= bx + bw and by <= cy <= by + bh:
-            matched.append((bw * bh, region))
-    if matched:
-        matched.sort()
-        return matched[0][1]
-    return None
+    st.session_state.selected_region = "종로구"  # 기본값 변경
 
 def get_csv() -> bytes:
     rows = []
@@ -196,7 +89,7 @@ def get_csv() -> bytes:
         return "지역,업체명,위치,전화번호\n".encode("utf-8-sig")
     return pd.DataFrame(rows).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
 
-# 데이터 집계
+# 실시간 통계 집계
 total_regions = len([r for r, c in st.session_state.region_data.items() if c])
 all_companies_list = [
     {"지역": r, "업체명": c["name"], "위치": c.get("address",""), "전화번호": c.get("phone","")}
@@ -206,19 +99,18 @@ all_companies_list = [
 total_companies = len(all_companies_list)
 
 # ─────────────────────────────────────────────
-# 5. UI 및 레이아웃 구성
+# 4. UI 레이아웃
 # ─────────────────────────────────────────────
-st.title("🗺️ 대한민국 행정구역 업체관리")
+st.title("🗺️ 대한민국 행정구역 업체관리 (GIS 자동인식 버전)")
 
 st.markdown(f"""
 <div class="stat-row">
   <div class="stat-card"><div class="stat-num">{total_regions}</div><div class="stat-label">등록 지역</div></div>
   <div class="stat-card"><div class="stat-num">{total_companies}</div><div class="stat-label">전체 업체 수</div></div>
-  <div class="stat-card"><div class="stat-num">{len(REGIONS)}</div><div class="stat-label">관리 가능 지역</div></div>
+  <div class="stat-card"><div class="stat-num">{len(all_region_names)}</div><div class="stat-label">인식된 총 행정구역 수</div></div>
 </div>
 """, unsafe_allow_html=True)
 
-# 상단 탭 배치
 tab_map, tab_list = st.tabs(["📍 지도에서 관리하기", f"📋 등록된 전체 업체 목록 ({total_companies}개)"])
 
 # ── 탭 1: 지도 관리 ──
@@ -226,35 +118,54 @@ with tab_map:
     col_map, col_panel = st.columns([3, 2], gap="large")
 
     with col_map:
-        st.markdown("#### 📍 지도에서 지역을 클릭하세요")
-        debug_mode = st.checkbox("🔧 좌표 디버그 모드")
+        st.markdown("#### 📍 지도 구역을 클릭하여 선택하세요")
+        
+        # 대한민국 중심점 설정
+        m = folium.Map(location=[36.3, 127.8], zoom_start=7, tiles="OpenStreetMap")
+        
+        # 행정구역 테두리선(GeoJSON)을 지도에 주입
+        selected_target = st.session_state.selected_region
+        
+        def style_function(feature):
+            is_selected = feature['properties']['NAME'] == selected_target
+            return {
+                'fillColor': '#ffb6c1' if is_selected else '#4361ee',
+                'color': '#dc325a' if is_selected else '#ffffff',
+                'weight': 3 if is_selected else 1.2,
+                'fillOpacity': 0.6 if is_selected else 0.2
+            }
 
-        orig_img = load_image()
-        display_img = draw_overlay(orig_img, st.session_state.selected_region)
-        coords = streamlit_image_coordinates(display_img, key="korea_map", use_column_width=True)
+        def highlight_function(feature):
+            return {
+                'fillColor': '#ffb6c1',
+                'weight': 3,
+                'fillOpacity': 0.8
+            }
 
-        if coords and coords != st.session_state.last_click:
-            st.session_state.last_click = coords
-            st.session_state.last_raw_coords = coords
-            detected = detect_region(coords["x"], coords["y"])
-            if detected:
-                st.session_state.selected_region = detected
+        # 지도 레이어 추가
+        geojson_data = folium.GeoJson(
+            gdf_regions,
+            name="행정경계",
+            style_function=style_function,
+            highlight_function=highlight_function,
+            tooltip=folium.GeoJsonTooltip(fields=["NAME"], aliases=["지역명:"], localize=True)
+        )
+        geojson_data.add_to(m)
+        
+        # 스트림릿에 Folium 지도 렌더링 및 클릭 감지
+        map_output = st_folium(m, width="100%", height=600, key="gis_map")
+        
+        # 지도를 클릭했을 때 이벤트 처리
+        if map_output and map_output.get("last_active_drawing"):
+            clicked_props = map_output["last_active_drawing"]["properties"]
+            clicked_name = clicked_props.get("NAME")
+            if clicked_name and clicked_name != st.session_state.selected_region:
+                st.session_state.selected_region = clicked_name
                 st.rerun()
 
-        if debug_mode and st.session_state.last_raw_coords:
-            c = st.session_state.last_raw_coords
-            dbg = detect_region(c["x"], c["y"])
-            st.markdown(f"""
-            <div class="debug-box">
-            🖱️ 클릭 좌표: x={c['x']}, y={c['y']}<br>
-            🎯 감지된 지역: <b>{dbg if dbg else '없음'}</b>
-            </div>
-            """, unsafe_allow_html=True)
-
         st.markdown("##### 또는 목록에서 선택")
-        region_list = sorted(REGIONS.keys())
-        sel_idx = region_list.index(st.session_state.selected_region) if st.session_state.selected_region in region_list else 0
-        chosen = st.selectbox("행정구역", region_list, index=sel_idx, label_visibility="collapsed")
+        sel_idx = all_region_names.index(st.session_state.selected_region) if st.session_state.selected_region in all_region_names else 0
+        chosen = st.selectbox("행정구역 검색/선택", all_region_names, index=sel_idx)
         if chosen != st.session_state.selected_region:
             st.session_state.selected_region = chosen
             st.rerun()
@@ -276,8 +187,8 @@ with tab_map:
         for idx, company in enumerate(companies):
             with st.container():
                 name = st.text_input("업체명 *", value=company.get("name", ""), key=f"name_{region}_{idx}", placeholder="예) 홍길동 전자")
-                address = st.text_input("위치", value=company.get("address", ""), key=f"addr_{region}_{idx}", placeholder="예) 충북 괴산군")
-                phone = st.text_input("전화번호", value=company.get("phone", ""), key=f"phon_{region}_{idx}", placeholder="예) 043-123-4567")
+                address = st.text_input("위치", value=company.get("address", ""), key=f"addr_{region}_{idx}", placeholder="예) 해당 시군구 주소")
+                phone = st.text_input("전화번호", value=company.get("phone", ""), key=f"phon_{region}_{idx}", placeholder="예) 010-1234-5678")
                 st.session_state.region_data[region][idx] = {"name": name, "address": address, "phone": phone}
                 if st.button("🗑️ 삭제", key=f"del_{region}_{idx}", use_container_width=True):
                     to_delete = idx
