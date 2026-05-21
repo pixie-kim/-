@@ -122,4 +122,49 @@ with tab_map:
                 c_phon = st.text_input("전화번호", value=company.get("phone", ""), key=f"p_{region}_{idx}")
                 
                 # 실시간 값 업데이트
-                st.session_state.region_data[region][idx] = {"name": c_name
+                st.session_state.region_data[region][idx] = {"name": c_name, "address": c_addr, "phone": c_phon}
+                
+                if st.button("🗑️ 제거", key=f"d_{region}_{idx}", use_container_width=True):
+                    to_delete = idx
+                st.markdown("---")
+
+        if to_delete is not None:
+            st.session_state.region_data[region].pop(to_delete)
+            with open(DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(st.session_state.region_data, f, ensure_ascii=False, indent=4)
+            st.rerun()
+
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("➕ 업체 추가", use_container_width=True):
+                st.session_state.region_data[region].append({"name": "", "address": "", "phone": ""})
+                st.rerun()
+        with b2:
+            if st.button("💾 최종 저장", type="primary", use_container_width=True):
+                # 이름이 비어있지 않은 유효 데이터만 필터링 후 저장
+                st.session_state.region_data[region] = [c for c in companies if c.get("name", "").strip()]
+                with open(DATA_FILE, "w", encoding="utf-8") as f:
+                    json.dump(st.session_state.region_data, f, ensure_ascii=False, indent=4)
+                st.success("저장되었습니다.")
+                st.rerun()
+
+# ── 탭 2: 데이터 목록 출력 ──
+with tab_list:
+    st.markdown("#### 📋 등록된 전체 업체 데이터베이스")
+    all_data = []
+    for r, comps in st.session_state.region_data.items():
+        for c in comps:
+            if c.get("name", "").strip():
+                all_data.append({"행정구역": r, "업체명": c["name"], "주소": c.get("address",""), "전화번호": c.get("phone","")})
+                
+    if all_data:
+        df = pd.DataFrame(all_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.download_button(
+            "📥 전체 데이터 CSV 다운로드", 
+            data=df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"), 
+            file_name="company_list.csv", 
+            mime="text/csv"
+        )
+    else:
+        st.info("등록된 업체가 없습니다.")
