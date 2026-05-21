@@ -1,9 +1,5 @@
-# app.py
-# pip install streamlit pillow pandas streamlit-image-coordinates
-
-
-import import os
-os.chdir(pathlib.Path(__file__).resolve().parent)pathlib
+import os
+import pathlib
 import json
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -11,9 +7,11 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 import pandas as pd
 
 # ─────────────────────────────────────────────
-# 경로 설정 (Streamlit Cloud 호환)
+# 경로 설정 및 작업 디렉토리 변경 (Streamlit Cloud 호환)
 # ─────────────────────────────────────────────
 BASE_DIR  = pathlib.Path(__file__).resolve().parent
+os.chdir(BASE_DIR)  # 작업 디렉토리를 스크립트 위치로 이동
+
 IMG_PATH  = BASE_DIR / "FullSizeRender.jpeg"
 DATA_FILE = BASE_DIR / "companies.json"
 
@@ -49,10 +47,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# session_state 초기화
+# 데이터 로드 함수 (JSON 파일 초기화)
 # ─────────────────────────────────────────────
+def load_json_data():
+    if DATA_FILE.exists():
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+# session_state 초기화
 if "region_data" not in st.session_state:
-    st.session_state.region_data = {}
+    st.session_state.region_data = load_json_data()
 
 if "selected_region" not in st.session_state:
     st.session_state.selected_region = "서울"
@@ -255,9 +263,10 @@ REGIONS = {
 @st.cache_data
 def load_image():
     if not IMG_PATH.exists():
-        st.error(f"이미지 파일을 찾을 수 없습니다. 경로: {IMG_PATH}")
+        st.error(f"이미지 파일을 찾을 수 없습니다. 경로: {IMG_PATH.absolute()}")
         st.stop()
     return Image.open(IMG_PATH).convert("RGB")
+
 # ─────────────────────────────────────────────
 # 선택 지역 핑크 하이라이트
 # ─────────────────────────────────────────────
@@ -384,6 +393,9 @@ with col_panel:
 
     if to_delete is not None:
         st.session_state.region_data[region].pop(to_delete)
+        # 삭제 후 변경 사항을 JSON 파일에 반영하기 위해 자동 저장 처리
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(st.session_state.region_data, f, ensure_ascii=False, indent=4)
         st.rerun()
 
     btn1, btn2 = st.columns(2)
@@ -396,10 +408,19 @@ with col_panel:
         dropped = len(companies) - len(valid)
         if st.button("💾 저장", type="primary", use_container_width=True):
             st.session_state.region_data[region] = valid
-            if dropped:
-                st.warning(f"업체명 없는 항목 {dropped}개 제외되었습니다.")
-            else:
-                st.success(f"✅ {region} 저장 완료!")
+            
+            # 💡 JSON 파일 영구 저장 로직 추가
+            try:
+                with open(DATA_FILE, "w", encoding="utf-8") as f:
+                    json.dump(st.session_state.region_data, f, ensure_ascii=False, indent=4)
+                
+                if dropped:
+                    st.warning(f"업체명 없는 항목 {dropped}개 제외되었습니다.")
+                else:
+                    st.success(f"✅ {region} 저장 완료 및 로컬 백업 성공!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"파일 저장 중 오류가 발생했습니다: {e}")
 
 # ─────────────────────────────────────────────
 # 전체 데이터 테이블 & CSV 다운로드
