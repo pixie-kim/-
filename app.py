@@ -7,68 +7,119 @@ import folium
 from streamlit_folium import st_folium
 
 # ─────────────────────────────────────────────
-# 1. 경로 및 파일 설정
+# 1. 환경 설정 및 경로 정의
 # ─────────────────────────────────────────────
 SHP_PATH  = "N3A_G0100000.shp"
 DATA_FILE = "companies.json"
 
-st.set_page_config(page_title="행정구역 업체관리 시스템", layout="wide", initial_sidebar_state="collapsed")
-
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
-    .main { background-color: #f5f6fa; }
-    h1 { font-size: 1.6rem !important; font-weight: 700; color: #1a1a2e; }
-    .region-badge {
-        display: inline-block; background: #4361ee; color: #fff;
-        border-radius: 6px; padding: 6px 14px; font-size: 1rem; font-weight: 700; margin-bottom: 12px;
-    }
-    .stButton > button { border-radius: 8px; font-weight: 500; }
-    .stat-row { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-    .stat-card {
-        background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
-        padding: 10px 18px; text-align: center; flex: 1; min-width: 100px;
-    }
-    .stat-num { font-size: 1.4rem; font-weight: 700; color: #4361ee; }
-    .stat-label { font-size: 0.75rem; color: #888; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="행정구역 업체관리", layout="wide", initial_sidebar_state="collapsed")
 
 # ─────────────────────────────────────────────
-# 2. GIS 데이터 안전 로드 (KeyError 해결)
+# 2. GIS 데이터 로드 (불필요한 조작 없이 원본 유지)
 # ─────────────────────────────────────────────
 @st.cache_data
-def load_shp_data():
+def load_base_map():
     if not os.path.exists(SHP_PATH):
-        st.error(f"⚠️ SHP 파일을 찾을 수 없습니다: {SHP_PATH}")
+        st.error(f"파일을 찾을 수 없습니다: {SHP_PATH}")
         st.stop()
     
-    # 인코딩 예외 처리
-    try:
-        gdf = gpd.read_file(SHP_PATH, encoding="cp949")
-    except Exception:
-        gdf = gpd.read_file(SHP_PATH, encoding="euc-kr")
-        
-    # [KeyError 해결] 파일 내부에 NAME 컬럼이 없거나 다를 경우를 대비한 100% 방어 로직
-    target_col = None
-    for col in gdf.columns:
-        if str(col).upper() == "NAME":
-            target_col = col
-            break
-            
-    if target_col is None:
-        # NAME이 없다면 텍스트(object) 형태를 가진 첫 번째 컬럼을 이름으로 강제 지정
-        for col in gdf.columns:
-            if gdf[col].dtype == 'object' and not str(col).upper().startswith('UFID'):
-                target_col = col
-                break
+    # 원본 데이터 그대로 인코딩만 맞춰서 로드
+    gdf = gpd.read_file(SHP_PATH, encoding="cp949")
+    
+    # 표준 위경도 좌표계(WGS84)로 변환
+    if gdf.crs is None:
+        gdf.crs = "EPSG:5179"
+    gdf = gdf.to_crs(epsg=4326)
+    
+    return gdf
 
-    if target_col is None:
-        st.error("SHP 파일 내에서 지역 명칭 컬럼을 찾을 수 없습니다.")
-        st.stop()
+# 데이터 가져오기
+gdf_regions = load_base_map()
+# 데이터 내에 확실히 존재하는 'NAME' 컬럼 활용하여 리스트 정렬
+all_region_names = sorted(gdf_regions["NAME"].dropna().unique().tolist())
+
+# ─────────────────────────────────────────────
+# 3. 사용자 데이터(JSON) 로드 및 상태 관리
+# ─────────────────────────────────────────────
+if "region_data" not in st.session_state:
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                st.session_state.region_data = json.load(f)
+        except Exception:
+            st.session_state.region_data = {}
+    else:
+        st.session_state.region_data = {}
+
+if "selected_region" not in st.session_state:
+    st.session_state.selected_region = all_region_names[0]
+
+# ─────────────────────────────────────────────
+# 4. 메인 대시보드 및 UI 레이아웃
+# ─────────────────────────────────────────────
+st.title("🗺️ 대한민국 행정구역 업체관리 시스템")
+
+tab_map, tab_list = st.tabs(["📍 지도 및 정보 관리", "📋 전체 등록 목록"])
+
+with tab_map:
+    col_map, col_panel = st.columns([3, 2], gap="large")
+
+    with col_map:
+        st.markdown("#### 🎯 행정구역 검색 및 선택")
+        # 가장 직관적이고 안전한 선택기 방식으로 연동
+        chosen = st.selectbox(
+            "관리할 지역을 선택하세요", 
+            all_region_names, 
+            index=all_region_names.index(st.session_state.selected_region)
+        )
+        if chosen != st.session_state.selected_region:
+            st.session_state.selected_region = chosen
+            st.rerun()
+
+        # 지도 생성 (전체 경계면 중심점 자동 계산)
+        bounds = gdf_regions.total_bounds
+        m = folium.Map(
+            location=[(bounds[1]+bounds[3])/2, (bounds[0]+bounds[2])/2], 
+            zoom_start=8, 
+            tiles="OpenStreetMap"
+        )
         
-    # 새로운 표준 'NAME' 컬럼 생성 및 데이터 정제
-    gdf["NAME"] = gdf[target_col].astype(str).str.strip()
-    gdf = gdf.dropna(subset=["NAME", "geometry"])
-    gdf
+        # 선택된 지역만 하이라이트 되도록 스타일 지정
+        def region_style(feature):
+            curr_name = feature['properties'].get('NAME', '')
+            is_target = (curr_name == st.session_state.selected_region)
+            return {
+                'fillColor': '#ffb6c1' if is_target else '#4361ee',
+                'color': '#dc325a' if is_target else '#4361ee',
+                'weight': 3 if is_target else 1,
+                'fillOpacity': 0.6 if is_target else 0.1
+            }
+
+        folium.GeoJson(
+            gdf_regions.__geo_interface__,
+            style_function=region_style,
+            tooltip=folium.GeoJsonTooltip(fields=["NAME"], aliases=["지역명:"])
+        ).add_to(m)
+        
+        # 단순 렌더링 전용 컴포넌트로 호출하여 클릭 시 세션 뒤틀림 원천 차단
+        st_folium(m, width="100%", height=580, key="static_gis_map")
+
+    with col_panel:
+        region = st.session_state.selected_region
+        st.subheader(f"📌 {region} 관리 판넬")
+
+        if region not in st.session_state.region_data:
+            st.session_state.region_data[region] = []
+
+        companies = st.session_state.region_data[region]
+
+        # 업체 입력 필드 렌더링
+        to_delete = None
+        for idx, company in enumerate(companies):
+            with st.container():
+                c_name = st.text_input("업체명 *", value=company.get("name", ""), key=f"n_{region}_{idx}")
+                c_addr = st.text_input("상세 주소", value=company.get("address", ""), key=f"a_{region}_{idx}")
+                c_phon = st.text_input("전화번호", value=company.get("phone", ""), key=f"p_{region}_{idx}")
+                
+                # 실시간 값 업데이트
+                st.session_state.region_data[region][idx] = {"name": c_name
