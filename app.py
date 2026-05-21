@@ -1,7 +1,9 @@
 # app.py
 # pip install streamlit pillow pandas streamlit-image-coordinates
 
-import pathlib
+
+import import os
+os.chdir(pathlib.Path(__file__).resolve().parent)pathlib
 import json
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -11,7 +13,7 @@ import pandas as pd
 # ─────────────────────────────────────────────
 # 경로 설정 (Streamlit Cloud 호환)
 # ─────────────────────────────────────────────
-BASE_DIR  = pathlib.Path(__file__).parent
+BASE_DIR  = pathlib.Path(__file__).resolve().parent
 IMG_PATH  = BASE_DIR / "FullSizeRender.jpeg"
 DATA_FILE = BASE_DIR / "companies.json"
 
@@ -252,8 +254,10 @@ REGIONS = {
 # ─────────────────────────────────────────────
 @st.cache_data
 def load_image():
+    if not IMG_PATH.exists():
+        st.error(f"이미지 파일을 찾을 수 없습니다. 경로: {IMG_PATH}")
+        st.stop()
     return Image.open(IMG_PATH).convert("RGB")
-
 # ─────────────────────────────────────────────
 # 선택 지역 핑크 하이라이트
 # ─────────────────────────────────────────────
